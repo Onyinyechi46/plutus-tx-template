@@ -146,7 +146,7 @@ mockMintingContext = ScriptContext
       , txInfoId              = TxId ""
       , txInfoRedeemers       = AssocMap.empty
       }
-  , scriptContextPurpose = Minting (TxOutRef (TxId "") 0)
+  , scriptContextPurpose = Minting cs
   }
   where
     cs = ownCurrencySymbol mockMintingContext
