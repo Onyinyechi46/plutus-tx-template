@@ -6,9 +6,11 @@ module Main (main) where
 import           Test.Hspec
 import           AuctionValidator
 
-import           PlutusLedgerApi.V1.Crypto      (PubKeyHash (..))
-import           PlutusLedgerApi.V1             (Lovelace (..))
-import           PlutusLedgerApi.V1.Interval    (always)
+-import           PlutusLedgerApi.V1.Crypto      (PubKeyHash (..))
+-import           PlutusLedgerApi.V1             (Lovelace (..))
+import           PlutusLedgerApi.V2.Crypto      (PubKeyHash (..))
+import           PlutusLedgerApi.V2             (Lovelace (..))
+import           PlutusLedgerApi.V2.Interval    (always)
 
 import           PlutusLedgerApi.V2             ( CurrencySymbol (..)
                                                , TokenName      (..)
