@@ -24,87 +24,79 @@ import           PlutusTx.Blueprint
 import           PlutusTx.Builtins.HasOpaque (stringToBuiltinByteStringHex)
 import           System.Environment          (getArgs)
 
+-- | Hardcoded values (replace with actual values as needed)
+sellerPkhHex :: BuiltinByteString
+sellerPkhHex = stringToBuiltinByteStringHex
+  "0000000000000000000000000000000000000000\
+  \0000000000000000000000000000000000000000"
+
+currencySymbolHex :: BuiltinByteString
+currencySymbolHex = stringToBuiltinByteStringHex
+  "00000000000000000000000000000000000000000000000000000000"
+
+-- | Auction parameters (customize for your use case)
 auctionParams :: AuctionParams
-auctionParams =
-  AuctionParams
-    { apSeller =
-        -- Replace with the hex-encoded seller's public key hash:
-        Crypto.PubKeyHash (
-          stringToBuiltinByteStringHex
-            "0000000000000000000000000000000000000000\
-            \0000000000000000000000000000000000000000"
-          )
-    , apCurrencySymbol =
-        -- Replace with your desired currency symbol (minting policy hash):
-        Value.CurrencySymbol (
-          stringToBuiltinByteStringHex
-            "00000000000000000000000000000000000000000000000000000000"
-          )
-    , apTokenName =
-        -- Replace with your desired token name:
-        Value.tokenName "MY_TOKEN"
-    , apMinBid =
-        -- Minimal bid in lovelace:
-        100
-    , apEndTime =
-        -- Replace with your desired end time in milliseconds:
-        Time.fromMilliSeconds 1_725_227_091_000
-    }
+auctionParams = AuctionParams
+  { apSeller          = Crypto.PubKeyHash sellerPkhHex
+  , apCurrencySymbol  = Value.CurrencySymbol currencySymbolHex
+  , apTokenName       = Value.tokenName "MY_TOKEN"
+  , apMinBid          = 100  -- In lovelace
+  , apEndTime         = Time.fromMilliSeconds 1_725_227_091_000
+  }
 
+-- | Main contract blueprint
 myContractBlueprint :: ContractBlueprint
-myContractBlueprint =
-  MkContractBlueprint
-    { contractId = Just "auction-validator"
-    , contractPreamble = myPreamble
-    , contractValidators = Set.singleton myValidator
-    , contractDefinitions =
-        deriveDefinitions @[AuctionParams, AuctionDatum, AuctionRedeemer]
-    }
+myContractBlueprint = MkContractBlueprint
+  { contractId           = Just "auction-validator"
+  , contractPreamble     = myPreamble
+  , contractValidators   = Set.singleton myValidator
+  , contractDefinitions  =
+      deriveDefinitions @[AuctionParams, AuctionDatum, AuctionRedeemer]
+  }
 
+-- | Metadata for the contract
 myPreamble :: Preamble
-myPreamble =
-  MkPreamble
-    { preambleTitle = "Auction Validator"
-    , preambleDescription =
-        Just "Blueprint for a Plutus script validating auction transactions"
-    , preambleVersion = "1.0.0"
-    , preamblePlutusVersion = PlutusV2
-    , preambleLicense = Just "MIT"
-    }
+myPreamble = MkPreamble
+  { preambleTitle         = "Auction Validator"
+  , preambleDescription   = Just "Blueprint for a Plutus script validating auction transactions"
+  , preambleVersion       = "1.0.0"
+  , preamblePlutusVersion = PlutusV2
+  , preambleLicense       = Just "MIT"
+  }
 
+-- | Validator definition
 myValidator :: ValidatorBlueprint referencedTypes
-myValidator =
-  MkValidatorBlueprint
-    { validatorTitle = "Auction Validator"
-    , validatorDescription =
-        Just "Plutus script validating auction transactions"
-    , validatorParameters =
-        [ MkParameterBlueprint
-            { parameterTitle = Just "Parameters"
-            , parameterDescription = Just "Compile-time validator parameters"
-            , parameterPurpose = Set.singleton Spend
-            , parameterSchema = definitionRef @AuctionParams
-            }
-        ]
-    , validatorRedeemer =
-        MkArgumentBlueprint
-          { argumentTitle = Just "Redeemer"
-          , argumentDescription = Just "Redeemer for the auction validator"
-          , argumentPurpose = Set.fromList [Spend]
-          , argumentSchema = definitionRef @()
+myValidator = MkValidatorBlueprint
+  { validatorTitle       = "Auction Validator"
+  , validatorDescription = Just "Plutus script validating auction transactions"
+  , validatorParameters  =
+      [ MkParameterBlueprint
+          { parameterTitle       = Just "Parameters"
+          , parameterDescription = Just "Compile-time validator parameters"
+          , parameterPurpose     = Set.singleton Spend
+          , parameterSchema      = definitionRef @AuctionParams
           }
-    , validatorDatum = Nothing
-    , validatorCompiled = do
-        let script = auctionValidatorScript auctionParams
-        let code = Short.fromShort (serialiseCompiledCode script)
-        Just (compiledValidator PlutusV2 code)
-    }
+      ]
+  , validatorRedeemer = MkArgumentBlueprint
+      { argumentTitle       = Just "Redeemer"
+      , argumentDescription = Just "Redeemer for the auction validator"
+      , argumentPurpose     = Set.fromList [Spend]
+      , argumentSchema      = definitionRef @()
+      }
+  , validatorDatum = Nothing
+  , validatorCompiled = Just $
+      let script = auctionValidatorScript auctionParams
+          code   = Short.fromShort (serialiseCompiledCode script)
+       in compiledValidator PlutusV2 code
+  }
 
+-- | Write the contract blueprint to the specified file
 writeBlueprintToFile :: FilePath -> IO ()
-writeBlueprintToFile path = writeBlueprint path myContractBlueprint
+writeBlueprintToFile = flip writeBlueprint myContractBlueprint
 
+-- | Entry point
 main :: IO ()
-main =
-  getArgs >>= \case
-    [arg] -> writeBlueprintToFile arg
-    args -> fail $ "Expects one argument, got " <> show (length args)
+main = getArgs >>= \case
+  [filePath] -> writeBlueprintToFile filePath
+  args       -> fail $
+    "Expected exactly one argument (output file path), but got: " <> show args
