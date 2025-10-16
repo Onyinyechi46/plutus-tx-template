@@ -1,15 +1,21 @@
+{-# LANGUAGE OverloadedStrings #-}
+
+module Main where
+
 import Test.QuickCheck
 import AuctionMintingPolicy
 
--- Property: The minting policy should mint exactly one token when used correctly
-property_oneTokenMinted :: PubKeyHash -> Property
+-- | Property: Only one token should be minted per auction
+-- We test that the policy allows minting exactly one token.
+property_oneTokenMinted :: PubKeyHash -> Bool
 property_oneTokenMinted pkh =
-  let
-    redeemer = ()
-    context  = mockMintingScriptContext pkh
-  in
-    auctionTypedMintingPolicy pkh redeemer context ==> mintedExactlyOneToken context
+    let redeemer = ()
+        ctx = mockMintingScriptContext
+    in auctionTypedMintingPolicy pkh redeemer ctx
+       && mintedExactlyOneToken ctx
 
--- Run QuickCheck test
+-- | Run QuickCheck to test our property
 main :: IO ()
-main = quickCheck property_oneTokenMinted
+main = do
+  putStrLn "Testing Auction Minting Policy..."
+  quickCheck property_oneTokenMinted
