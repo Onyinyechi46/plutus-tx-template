@@ -23,47 +23,81 @@ module AuctionMintingPolicy where
 
 import PlutusCore.Version (plcVersion100)
 import PlutusLedgerApi.V1.Value (flattenValue)
-import PlutusLedgerApi.V2 (PubKeyHash, ScriptContext (..), TxInfo (..))
-import PlutusLedgerApi.V2.Contexts (ownCurrencySymbol, txSignedBy)
+import PlutusLedgerApi.V2 (
+    PubKeyHash,
+    ScriptContext (..),
+    TxInfo (..)
+  )
+import PlutusLedgerApi.V2.Contexts (
+    ownCurrencySymbol,
+    txSignedBy
+  )
 import PlutusTx
 import PlutusTx.Prelude qualified as PlutusTx
 
--- BLOCK1
+--------------------------------------------------------------------------------
+-- | TYPES
+--------------------------------------------------------------------------------
+
+-- | Parameter: the public key hash allowed to mint
 type AuctionMintingParams = PubKeyHash
+
+-- | Redeemer is unused for this simple minting policy
 type AuctionMintingRedeemer = ()
 
+--------------------------------------------------------------------------------
+-- | ON-CHAIN VALIDATION LOGIC
+--------------------------------------------------------------------------------
+
 {-# INLINEABLE auctionTypedMintingPolicy #-}
+-- | Ensures:
+--   1. The transaction is signed by the given PubKeyHash
+--   2. Exactly one token is minted by this policy
 auctionTypedMintingPolicy ::
   AuctionMintingParams ->
   AuctionMintingRedeemer ->
   ScriptContext ->
   Bool
-auctionTypedMintingPolicy pkh _redeemer ctx =
-  txSignedBy txInfo pkh PlutusTx.&& mintedExactlyOneToken
+auctionTypedMintingPolicy pkh _ ctx =
+    signedByOwner PlutusTx.&& exactlyOneTokenMinted
   where
-    txInfo = scriptContextTxInfo ctx
-    mintedExactlyOneToken = case flattenValue (txInfoMint txInfo) of
-      [(currencySymbol, _tokenName, quantity)] ->
-        currencySymbol PlutusTx.== ownCurrencySymbol ctx PlutusTx.&& quantity PlutusTx.== 1
-      _ -> False
--- BLOCK2
+    info :: TxInfo
+    info = scriptContextTxInfo ctx
 
+    signedByOwner :: Bool
+    signedByOwner = txSignedBy info pkh
+
+    exactlyOneTokenMinted :: Bool
+    exactlyOneTokenMinted = case flattenValue (txInfoMint info) of
+      [(cs, _tn, q)] ->
+        cs PlutusTx.== ownCurrencySymbol ctx PlutusTx.&& q PlutusTx.== 1
+      _ -> False
+
+--------------------------------------------------------------------------------
+-- | UNTYPED POLICY WRAPPER
+--------------------------------------------------------------------------------
+
+{-# INLINEABLE auctionUntypedMintingPolicy #-}
 auctionUntypedMintingPolicy ::
   AuctionMintingParams ->
   BuiltinData ->
   BuiltinData ->
   PlutusTx.BuiltinUnit
 auctionUntypedMintingPolicy pkh redeemer ctx =
-  PlutusTx.check
-    ( auctionTypedMintingPolicy
-        pkh
-        (PlutusTx.unsafeFromBuiltinData redeemer)
-        (PlutusTx.unsafeFromBuiltinData ctx)
-    )
+  PlutusTx.check $
+    auctionTypedMintingPolicy
+      pkh
+      (unsafeFromBuiltinData redeemer)
+      (unsafeFromBuiltinData ctx)
+
+--------------------------------------------------------------------------------
+-- | COMPILED MINTING POLICY
+--------------------------------------------------------------------------------
 
 auctionMintingPolicyScript ::
   AuctionMintingParams ->
   CompiledCode (BuiltinData -> BuiltinData -> PlutusTx.BuiltinUnit)
 auctionMintingPolicyScript pkh =
   $$(PlutusTx.compile [||auctionUntypedMintingPolicy||])
-    `PlutusTx.unsafeApplyCode` PlutusTx.liftCode plcVersion100 pkh
+    `PlutusTx.unsafeApplyCode`
+    PlutusTx.liftCode plcVersion100 pkh
