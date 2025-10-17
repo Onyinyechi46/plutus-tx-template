@@ -8,6 +8,7 @@
 6. [✅ Running Tests](#6-running-tests)
 7. [🧪 Property-Based Testing](#7-property-based-testing)
 8. [📖 Glossary](#8-glossary)
+9. [Developer](Paul Toriola)
 
 --checked 15-09-2025
 
@@ -193,3 +194,6 @@ Add a second test suite in `.cabal` if desired.
 | **AssocMap**      | Internal map type used by Plutus for associating keys to values in contexts (`Datum`, etc.). |
 | **Hspec**         | Haskell testing framework for behavior‐driven development.                                   |
 | **QuickCheck**    | Library for property‐based testing in Haskell.                                               |
+# 9. Developer
+
+Name:Toriola Timilehin Paul
