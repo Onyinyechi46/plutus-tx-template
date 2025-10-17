@@ -43,21 +43,14 @@ import PlutusTx.Prelude qualified as PlutusTx
 import PlutusTx.Show qualified as PlutusTx
 import PlutusTx.List qualified as List
 
--- BLOCK1
--- AuctionValidator.hs
+-- Auction parameters and data types ------------------------------------------------
+
 data AuctionParams = AuctionParams
   { apSeller         :: PubKeyHash
-  -- ^ Seller's public key hash. The highest bid (if exists) will be sent to the seller.
-  -- If there is no bid, the asset auctioned will be sent to the seller.
   , apCurrencySymbol :: CurrencySymbol
-  -- ^ The currency symbol of the token being auctioned.
   , apTokenName      :: TokenName
-  -- ^ The name of the token being auctioned.
-  -- These can all be encoded as a `Value`.
   , apMinBid         :: Lovelace
-  -- ^ The minimum bid in Lovelace.
   , apEndTime        :: POSIXTime
-  -- ^ The deadline for placing a bid. This is the earliest time the auction can be closed.
   }
   deriving stock (Generic)
   deriving anyclass (HasBlueprintDefinition)
@@ -67,11 +60,8 @@ PlutusTx.makeIsDataSchemaIndexed ''AuctionParams [('AuctionParams, 0)]
 
 data Bid = Bid
   { bAddr   :: PlutusTx.BuiltinByteString
-  -- ^ Bodder's wallet address
   , bPkh    :: PubKeyHash
-  -- ^ Bidder's public key hash.
   , bAmount :: Lovelace
-  -- ^ Bid amount in Lovelace.
   }
   deriving stock (Generic)
   deriving anyclass (HasBlueprintDefinition)
@@ -82,14 +72,8 @@ PlutusTx.makeIsDataSchemaIndexed ''Bid [('Bid, 0)]
 instance PlutusTx.Eq Bid where
   {-# INLINEABLE (==) #-}
   bid == bid' =
-    bPkh bid
-      PlutusTx.== bPkh bid'
-      PlutusTx.&& bAmount bid
-      PlutusTx.== bAmount bid'
+    bPkh bid PlutusTx.== bPkh bid' PlutusTx.&& bAmount bid PlutusTx.== bAmount bid'
 
-{- | Datum represents the state of a smart contract. In this case
-it contains the highest bid so far (if exists).
--}
 newtype AuctionDatum = AuctionDatum {adHighestBid :: Maybe Bid}
   deriving stock (Generic)
   deriving newtype
@@ -99,23 +83,31 @@ newtype AuctionDatum = AuctionDatum {adHighestBid :: Maybe Bid}
     , PlutusTx.UnsafeFromData
     )
 
-{- | Redeemer is the input that changes the state of a smart contract.
-In this case it is either a new bid, or a request to close the auction
-and pay out the seller and the highest bidder.
--}
 data AuctionRedeemer = NewBid Bid | Payout
   deriving stock (Generic)
   deriving anyclass (HasBlueprintDefinition)
 
 PlutusTx.makeIsDataSchemaIndexed ''AuctionRedeemer [('NewBid, 0), ('Payout, 1)]
 
--- BLOCK2
--- AuctionValidator.hs
-{-# INLINEABLE auctionTypedValidator #-}
+-- Utility helpers -----------------------------------------------------------------
 
-{- | Given the auction parameters, determines whether the transaction is allowed to
-spend the UTXO.
--}
+{-# INLINEABLE txOutputs #-}
+txOutputs :: TxInfo -> [TxOut]
+txOutputs = txInfoOutputs
+
+{-# INLINEABLE findOutputByPkh #-}
+-- | Find an output that pays to the given PubKeyHash and satisfies the supplied predicate on Value.
+findOutputByPkh :: PubKeyHash -> (PlutusTx.Value -> Bool) -> TxInfo -> Maybe TxOut
+findOutputByPkh pkh predVal txi =
+  List.find (\o -> toPubKeyHash (txOutAddress o) PlutusTx.== Just pkh PlutusTx.&& predVal (txOutValue o)) (txOutputs txi)
+
+{-# INLINEABLE requires #-}
+requires :: Bool -> PlutusTx.BuiltinString -> Bool
+requires cond err = PlutusTx.traceIfFalse err cond
+
+-- Core validator (typed) ----------------------------------------------------------
+
+{-# INLINEABLE auctionTypedValidator #-}
 auctionTypedValidator ::
   AuctionParams ->
   AuctionDatum ->
@@ -123,125 +115,105 @@ auctionTypedValidator ::
   ScriptContext ->
   Bool
 auctionTypedValidator params (AuctionDatum highestBid) redeemer ctx@(ScriptContext txInfo _) =
-  List.and conditions
-  where
-    conditions :: [Bool]
-    conditions = case redeemer of
-      NewBid bid ->
-        [ -- The new bid must be higher than the highest bid.
-          -- If this is the first bid, it must be at least as high as the minimum bid.
-          sufficientBid bid
-        , -- The bid is not too late.
-          validBidTime
-        , -- The previous highest bid should be refunded.
-          refundsPreviousHighestBid
-        , -- A correct new datum is produced, containing the new highest bid.
-          correctOutput bid
+  case redeemer of
+    NewBid bid ->
+      List.and
+        [ requires (sufficientBid bid) "Bid too small"
+        , requires validBidTime "Bid submitted outside allowed time"
+        , requires (refundsPreviousHighestBid highestBid txInfo) "Previous highest bid refund not found"
+        , requires (correctContinuingOutput bid ctx params) "Continuing output invalid"
         ]
-      Payout ->
-        [ -- The payout is not too early.
-          validPayoutTime
-        , -- The seller gets the highest bid.
-          sellerGetsHighestBid
-        , -- The highest bidder gets the asset.
-          highestBidderGetsAsset
+    Payout ->
+      List.and
+        [ requires validPayoutTime "Payout attempted before end time"
+        , requires (sellerGetsHighestBid highestBid txInfo params) "Seller did not receive highest bid"
+        , requires (highestBidderGetsAsset highestBid txInfo params) "Highest bidder did not receive asset"
         ]
--- BLOCK3
--- AuctionValidator.hs
-    sufficientBid :: Bid -> Bool
-    sufficientBid (Bid _ _ amt) = case highestBid of
-      Just (Bid _ _ amt') -> amt PlutusTx.> amt'
-      Nothing             -> amt PlutusTx.>= apMinBid params
--- BLOCK4
--- AuctionValidator.hs
-    validBidTime :: Bool
-    ~validBidTime = to (apEndTime params) `contains` txInfoValidRange txInfo
--- BLOCK5
--- AuctionValidator.hs
-    refundsPreviousHighestBid :: Bool
-    ~refundsPreviousHighestBid = case highestBid of
-      Nothing -> True
-      Just (Bid _ bidderPkh amt) ->
-        case List.find
-          ( \o ->
-              (toPubKeyHash (txOutAddress o) PlutusTx.== Just bidderPkh)
-                PlutusTx.&& (lovelaceValueOf (txOutValue o) PlutusTx.== amt)
-          )
-          (txInfoOutputs txInfo) of
-          Just _  -> True
-          Nothing -> PlutusTx.traceError "Not found: refund output"
--- BLOCK6
--- AuctionValidator.hs
-    currencySymbol :: CurrencySymbol
-    currencySymbol = apCurrencySymbol params
 
-    tokenName :: TokenName
-    tokenName = apTokenName params
+-- Bid checks ----------------------------------------------------------------------
 
-    correctOutput :: Bid -> Bool
-    correctOutput bid = case getContinuingOutputs ctx of
-      [o] ->
-        let correctOutputDatum = case txOutDatum o of
-              OutputDatum (Datum newDatum) -> case PlutusTx.fromBuiltinData newDatum of
+{-# INLINEABLE sufficientBid #-}
+sufficientBid :: Bid -> AuctionDatum -> AuctionParams -> Bool
+sufficientBid (Bid _ _ amt) (AuctionDatum maybeH) params = case maybeH of
+  Just (Bid _ _ prevAmt) -> amt PlutusTx.> prevAmt
+  Nothing                -> amt PlutusTx.>= apMinBid params
+
+-- Time checks ---------------------------------------------------------------------
+
+{-# INLINEABLE validBidTime #-}
+validBidTime :: AuctionParams -> TxInfo -> Bool
+validBidTime params tx =
+  -- new bids must be included in a tx whose VALID RANGE is before or containing end time
+  to (apEndTime params) `contains` txInfoValidRange tx
+
+{-# INLINEABLE validPayoutTime #-}
+validPayoutTime :: AuctionParams -> TxInfo -> Bool
+validPayoutTime params tx =
+  -- payout must happen at or after end time
+  from (apEndTime params) `contains` txInfoValidRange tx
+
+-- Refund / payout helpers ---------------------------------------------------------
+
+{-# INLINEABLE refundsPreviousHighestBid #-}
+refundsPreviousHighestBid :: Maybe Bid -> TxInfo -> Bool
+refundsPreviousHighestBid Nothing _ = True
+refundsPreviousHighestBid (Just (Bid _ bidderPkh amt)) txi =
+  case findOutputByPkh bidderPkh (\v -> lovelaceValueOf v PlutusTx.== amt) txi of
+    Just _  -> True
+    Nothing -> PlutusTx.traceError "Refund to previous highest bidder not found"
+
+{-# INLINEABLE sellerGetsHighestBid #-}
+sellerGetsHighestBid :: Maybe Bid -> TxInfo -> AuctionParams -> Bool
+sellerGetsHighestBid Nothing _ _ = True
+sellerGetsHighestBid (Just (Bid _ _ amt)) txi params =
+  -- strict equality: seller must receive exactly the bid lovelace
+  case findOutputByPkh (apSeller params) (\v -> lovelaceValueOf v PlutusTx.== amt) txi of
+    Just _  -> True
+    Nothing -> PlutusTx.traceError "Seller payment not found"
+
+{-# INLINEABLE highestBidderGetsAsset #-}
+highestBidderGetsAsset :: Maybe Bid -> TxInfo -> AuctionParams -> Bool
+highestBidderGetsAsset mb txi params =
+  let beneficiary = case mb of
+        Nothing             -> apSeller params
+        Just (Bid _ pkh _)  -> pkh
+   in case findOutputByPkh beneficiary (\v -> valueOf v (apCurrencySymbol params) (apTokenName params) PlutusTx.== 1) txi of
+        Just _  -> True
+        Nothing -> PlutusTx.traceError "Asset not paid to winner (or seller if no bids)"
+
+-- Continuing output checks for new bid --------------------------------------------
+
+{-# INLINEABLE correctContinuingOutput #-}
+correctContinuingOutput :: Bid -> ScriptContext -> AuctionParams -> Bool
+correctContinuingOutput bid ctx params =
+  case getContinuingOutputs ctx of
+    [o] ->
+      let od = txOutDatum o
+       in case od of
+            OutputDatum (Datum d) ->
+              case PlutusTx.fromBuiltinData d of
                 Just (AuctionDatum (Just bid')) ->
-                  PlutusTx.traceIfFalse
-                    "Invalid output datum: contains a different Bid than expected"
-                    (bid PlutusTx.== bid')
+                  -- datum must exactly match new highest bid
+                  PlutusTx.traceIfFalse "Continuing datum does not contain expected Bid" (bid PlutusTx.== bid')
+                  PlutusTx.&& checkOutputValue bid (txOutValue o) params
                 Just (AuctionDatum Nothing) ->
-                  PlutusTx.traceError "Invalid output datum: expected Just Bid, got Nothing"
-                Nothing ->
-                  PlutusTx.traceError "Failed to decode output datum"
-              OutputDatumHash _ ->
-                PlutusTx.traceError "Expected OutputDatum, got OutputDatumHash"
-              NoOutputDatum ->
-                PlutusTx.traceError "Expected OutputDatum, got NoOutputDatum"
+                  PlutusTx.traceError "Continuing datum: expected Just Bid, got Nothing"
+                Nothing -> PlutusTx.traceError "Failed to decode continuing output datum"
+            OutputDatumHash _ -> PlutusTx.traceError "Expected OutputDatum, got OutputDatumHash"
+            NoOutputDatum      -> PlutusTx.traceError "Expected OutputDatum, got NoOutputDatum"
+    os -> PlutusTx.traceError (PlutusTx.appendString "Expected exactly one continuing output, got " (PlutusTx.show (List.length os)))
 
-            outValue = txOutValue o
+{-# INLINEABLE checkOutputValue #-}
+-- Check that the continuing output contains the bid lovelace and exactly one token.
+checkOutputValue :: Bid -> PlutusTx.Value -> AuctionParams -> Bool
+checkOutputValue bid outValue params =
+  let lovOk = lovelaceValueOf outValue PlutusTx.== bAmount bid
+      tokenOk = valueOf outValue (apCurrencySymbol params) (apTokenName params) PlutusTx.== 1
+   in PlutusTx.traceIfFalse "Continuing output lovelace mismatch" lovOk
+        PlutusTx.&& PlutusTx.traceIfFalse "Continuing output token mismatch" tokenOk
 
-            correctOutputValue =
-              (lovelaceValueOf outValue PlutusTx.== bAmount bid)
-                PlutusTx.&& (valueOf outValue currencySymbol tokenName PlutusTx.== 1)
-         in correctOutputDatum PlutusTx.&& correctOutputValue
-      os ->
-        PlutusTx.traceError
-          ( "Expected exactly one continuing output, got "
-              PlutusTx.<> PlutusTx.show (List.length os)
-          )
--- BLOCK7
--- AuctionValidator.hs
-    validPayoutTime :: Bool
-    ~validPayoutTime = from (apEndTime params) `contains` txInfoValidRange txInfo
+-- Untyped wrapper and compilation -------------------------------------------------
 
-    sellerGetsHighestBid :: Bool
-    ~sellerGetsHighestBid = case highestBid of
-      Nothing -> True
-      Just bid ->
-        case List.find
-          ( \o ->
-              (toPubKeyHash (txOutAddress o) PlutusTx.== Just (apSeller params))
-                PlutusTx.&& (lovelaceValueOf (txOutValue o) PlutusTx.== bAmount bid)
-          )
-          (txInfoOutputs txInfo) of
-          Just _  -> True
-          Nothing -> PlutusTx.traceError "Not found: Output paid to seller"
-
-    highestBidderGetsAsset :: Bool
-    ~highestBidderGetsAsset =
-      let highestBidder = case highestBid of
-            -- If there are no bids, the asset should go back to the seller
-            Nothing  -> apSeller params
-            Just bid -> bPkh bid
-       in case List.find
-            ( \o ->
-                (toPubKeyHash (txOutAddress o) PlutusTx.== Just highestBidder)
-                  PlutusTx.&& (valueOf (txOutValue o) currencySymbol tokenName PlutusTx.== 1)
-            )
-            (txInfoOutputs txInfo) of
-            Just _  -> True
-            Nothing -> PlutusTx.traceError "Not found: Output paid to highest bidder"
-
--- BLOCK8
--- AuctionValidator.hs
 {-# INLINEABLE auctionUntypedValidator #-}
 auctionUntypedValidator ::
   AuctionParams ->
@@ -265,30 +237,5 @@ auctionValidatorScript params =
   $$(PlutusTx.compile [||auctionUntypedValidator||])
     `PlutusTx.unsafeApplyCode` PlutusTx.liftCode plcVersion100 params
 
--- BLOCK9
--- AuctionValidator.hs
-PlutusTx.asData
-  [d|
-    data Bid' = Bid'
-      { bPkh' :: PubKeyHash
-      , -- \^ Bidder's wallet address.
-        bAmount' :: Lovelace
-      }
-      -- \^ Bid amount in Lovelace.
-
-      -- We can derive instances with the newtype strategy, and they
-      -- will be based on the instances for 'Data'
-      deriving newtype (Eq, Ord, PlutusTx.ToData, FromData, UnsafeFromData)
-
-    -- don't do this for the datum, since it's just a newtype so
-    -- simply delegates to the underlying type
-
-    -- \| Redeemer is the input that changes the state of a smart contract.
-    -- In this case it is either a new bid, or a request to close the auction
-    -- and pay out the seller and the highest bidder.
-    data AuctionRedeemer' = NewBid' Bid | Payout'
-      deriving newtype (Eq, Ord, PlutusTx.ToData, FromData, UnsafeFromData)
-    |]
-
--- BLOCK10
--- AuctionValidator.hs
+-- Small note: you kept a separate 'asData' / alternative representation block in the original file;
+-- if you relied on that for tests or off-chain code generation you can keep/merge it here as needed.
