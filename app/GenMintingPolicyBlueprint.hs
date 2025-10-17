@@ -18,13 +18,16 @@
 
 module Main where
 
-import AuctionMintingPolicy
+import AuctionMintingPolicy (AuctionMintingParams, auctionMintingPolicyScript)
 import Data.ByteString.Short qualified as Short
 import Data.Set qualified as Set
 import PlutusLedgerApi.Common (serialiseCompiledCode)
 import PlutusTx.Blueprint
 import System.Environment (getArgs)
+import System.Exit (die)
+import System.IO (hPutStrLn, stderr)
 
+-- | Top-level contract blueprint for the auction minting policy
 myContractBlueprint :: ContractBlueprint
 myContractBlueprint =
   MkContractBlueprint
@@ -34,6 +37,7 @@ myContractBlueprint =
     , contractDefinitions = deriveDefinitions @[AuctionMintingParams, ()]
     }
 
+-- | Metadata describing the contract
 myPreamble :: Preamble
 myPreamble =
   MkPreamble
@@ -44,6 +48,18 @@ myPreamble =
     , preambleLicense = Just "MIT"
     }
 
+-- | Build the compiled validator
+compiledAuctionValidator :: Maybe CompiledValidator
+compiledAuctionValidator = 
+  let 
+    -- TODO: Replace this with a real public key hash or pass it as a parameter
+    dummySellerPKH = error "Replace with seller public key hash"
+    script = auctionMintingPolicyScript dummySellerPKH
+    code = Short.fromShort (serialiseCompiledCode script)
+  in 
+    Just (compiledValidator PlutusV2 code)
+
+-- | Validator blueprint for the minting policy
 myValidator :: ValidatorBlueprint referencedTypes
 myValidator =
   MkValidatorBlueprint
@@ -61,21 +77,24 @@ myValidator =
         MkArgumentBlueprint
           { argumentTitle = Just "Redeemer for the minting policy"
           , argumentDescription = Just "The minting policy does not use a redeemer, hence ()"
-          , argumentPurpose = Set.fromList [Mint]
+          , argumentPurpose = Set.singleton Mint
           , argumentSchema = definitionRef @()
           }
     , validatorDatum = Nothing
-    , validatorCompiled = do 
-        let script = auctionMintingPolicyScript (error "Replace with seller public key hash")
-        let code = Short.fromShort (serialiseCompiledCode script) 
-        Just (compiledValidator PlutusV2 code)
+    , validatorCompiled = compiledAuctionValidator
     }
 
+-- | Write the blueprint to a file at the given path
 writeBlueprintToFile :: FilePath -> IO ()
-writeBlueprintToFile path = writeBlueprint path myContractBlueprint
+writeBlueprintToFile path = do
+  putStrLn $ "Writing blueprint to: " <> path
+  writeBlueprint path myContractBlueprint
+  putStrLn "Blueprint successfully written."
 
+-- | Main entry point
 main :: IO ()
-main =
-  getArgs >>= \case
-    [arg] -> writeBlueprintToFile arg
-    args -> fail $ "Expects one argument, got " <> show (length args)
+main = getArgs >>= \case
+  [filePath] -> writeBlueprintToFile filePath
+  args       -> do
+    hPutStrLn stderr $ "Expected exactly one argument (output file path), but got: " <> show args
+    die "Usage: auction-blueprint <output-file-path>"
