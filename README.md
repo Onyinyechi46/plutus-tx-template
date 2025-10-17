@@ -12,6 +12,7 @@
 6. 🧪 Property-Based Testing
 7. 🚀 Usage
 8. 📖 Glossary
+9. [Developer](Paul Toriola)
 
 ---
 
@@ -153,4 +154,5 @@ To verify invariants using QuickCheck:
 
 *Updated by Coxygen Global - Bernard Sibanda*
 *Date: 15 September 2025*
+Name:Toriola Timilehin Paul
 
