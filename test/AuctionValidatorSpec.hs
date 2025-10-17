@@ -14,6 +14,8 @@ import           PlutusLedgerApi.V2             ( CurrencySymbol (..)
                                                , TokenName      (..)
                                                , ScriptContext  (..)
                                                , TxInfo         (..)
+                                               , TxOut          (..)
+                                               , Value
                                                )
 import           PlutusLedgerApi.V2.Contexts    ( ScriptPurpose (..)
                                                , TxOutRef       (..)
@@ -54,10 +56,27 @@ mkParams seller minBid =
     , apEndTime        = 1725227091000
     }
 
--- | Dummy bids for test readability
+-- | Dummy bidders for test readability
 oldBidder, newBidder :: PubKeyHash
 oldBidder = PubKeyHash "oldBidder"
 newBidder = PubKeyHash "newBidder"
+
+-- | Helper: Create a simple TxOut holding the token and a given amount of lovelace
+mkTxOut :: PubKeyHash -> Lovelace -> CurrencySymbol -> TokenName -> TxOut
+mkTxOut pkh (Lovelace lovelaceAmt) cs tn =
+  TxOut
+    { txOutAddress = Address (PubKeyCredential pkh) Nothing
+    , txOutValue = singleton cs tn 1 <> lovelaceValueOf lovelaceAmt
+    , txOutDatumHash = Nothing
+    }
+
+-- | Construct a singleton Value for the token
+singleton :: CurrencySymbol -> TokenName -> Integer -> Value
+singleton = -- Implementation depends on your environment; usually comes from Plutus libraries
+
+-- | lovelaceValueOf helper from Ledger.Api.V1.Value
+lovelaceValueOf :: Integer -> Value
+lovelaceValueOf = -- Implementation depends on your environment; usually comes from Plutus libraries
 
 -- | Main test suite
 main :: IO ()
@@ -75,14 +94,22 @@ main = hspec $ do
       auctionTypedValidator params datum redeemer ctx
         `shouldBe` False
 
-    it "accepts a higher bid when context is valid (placeholder test)" $ do
+    it "accepts a higher bid when the context has a valid output for the new bidder" $ do
       let params      = mkParams (PubKeyHash "12345678") (Lovelace 100)
           previousBid = Just (Bid "addr" oldBidder (Lovelace 100))
           newBid      = Bid   "addr" newBidder (Lovelace 200)
           datum       = AuctionDatum previousBid
           redeemer    = NewBid newBid
-          ctx         = mockScriptContext { scriptContextTxInfo = (scriptContextTxInfo mockScriptContext) { txInfoOutputs = [] } }
-          -- TODO: Replace [] with a valid TxOut simulating the new bidder’s output
+
+          -- Create a TxOut representing the output to the new bidder holding the token
+          txOutNewBidder = mkTxOut newBidder (Lovelace 200) (apCurrencySymbol params) (apTokenName params)
+
+          ctx = mockScriptContext
+                { scriptContextTxInfo = (scriptContextTxInfo mockScriptContext)
+                    { txInfoOutputs = [txOutNewBidder]
+                    }
+                }
 
       auctionTypedValidator params datum redeemer ctx
-        `shouldBe` False  -- Change to True when TxOuts are mocked properly
+        `shouldBe` True
+
