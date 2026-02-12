@@ -1,24 +1,25 @@
 {-# LANGUAGE OverloadedStrings #-}
 
 import Test.QuickCheck
-import AuctionValidator
+import AuctionValidator -- Assume this contains necessary types and functions
 
+-- Arbitrary instance for Bid ensuring positive bid amounts
 instance Arbitrary Bid where
     arbitrary = do
-        addr <- arbitrary
-        pkh <- arbitrary
-        amt <- arbitrary `suchThat` (> 0)  -- Ensure the bid amount is positive
-        return $ Bid addr pkh amt
+        bAddress <- arbitrary
+        bPubKey  <- arbitrary
+        bAmount  <- arbitrary `suchThat` (> 0)
+        return $ Bid bAddress bPubKey bAmount
 
-property_newBidHigherThanPrevious :: Bid -> Bid -> Property
-property_newBidHigherThanPrevious previousBid newBid = 
-    let params = AuctionParams "seller" "currencySymbol" "MY_TOKEN" 100 1725227091000
-        datum = AuctionDatum (Just previousBid)
-        redeemer = NewBid newBid
-        context = mockScriptContext
-    in (bAmount newBid > bAmount previousBid) ==> 
-        auctionTypedValidator params datum redeemer context
+-- Property: A new bid must be higher than the previous bid to be valid
+prop_newBidMustBeHigher :: Bid -> Bid -> Property
+prop_newBidMustBeHigher previousBid newBid =
+    (bAmount newBid > bAmount previousBid) ==>
+        let params   = AuctionParams "seller" "currencySymbol" "MY_TOKEN" 100 1725227091000
+            datum    = AuctionDatum (Just previousBid)
+            redeemer = NewBid newBid
+            context  = mockScriptContext params datum redeemer -- Assuming this builds a valid mock context
+        in auctionTypedValidator params datum redeemer context === True
 
 main :: IO ()
-main = quickCheck property_newBidHigherThanPrevious
-
+main = quickCheck prop_newBidMustBeHigher
